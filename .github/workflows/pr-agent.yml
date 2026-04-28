@@ -1,0 +1,28 @@
+name: Reusable PR-Agent Review
+
+on:
+  workflow_call:
+    secrets:
+      OPENAI_KEY:
+        required: true
+
+jobs:
+  pr-agent:
+    if: >-
+      ${{ github.event.sender.type != 'Bot' &&
+      (github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request)) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Run PR-Agent
+        uses: qodo-ai/pr-agent@main
+        env:
+          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          github_action_config.auto_review: "true"
+          github_action_config.auto_describe: "false"
+          github_action_config.auto_improve: "false"
