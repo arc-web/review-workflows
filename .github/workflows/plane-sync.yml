@@ -1,0 +1,121 @@
+name: Reusable Plane Task Sync
+
+on:
+  workflow_call:
+    secrets:
+      PLANE_API_KEY:
+        required: true
+
+jobs:
+  plane-sync:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Sync Plane task state
+        env:
+          PLANE_API_KEY: ${{ secrets.PLANE_API_KEY }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_ACTION: ${{ github.event.action }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 << 'PYEOF'
+          import os, re, json, urllib.request, sys
+
+          # --- Config ---
+          BASE_URL = "https://arc.todovibes.com/api/v1"
+          KEY = os.environ["PLANE_API_KEY"]
+          HEADERS = {
+              "X-Api-Key": KEY,
+              "User-Agent": "plane-sync-action/1.0",
+              "Content-Type": "application/json",
+          }
+
+          PROJECT_MAP = {
+              "AGENT": ("todovibes", "0e399778-93d9-4a95-ba2f-755990dd69bc"),
+              "INFRA": ("todovibes", "9643da9a-da40-4f40-8cbe-561822288cd4"),
+              "COMM":  ("todovibes", "980f20b4-80b9-4605-864f-6e736a65446b"),
+              "ADS":   ("todovibes", "b1b1b597-02d6-475d-9b5c-37c64276e1ea"),
+              "LAND":  ("todovibes", "b7f45068-8020-4245-ab48-a2234a9c7d43"),
+              "JOHAN": ("todovibes", "67560bfa-ca1b-4632-bed2-aa0ffd611063"),
+          }
+
+          STATE_TODO        = "c0528a48-cbb1-44e5-9f09-1e8fc566bb56"
+          STATE_IN_PROGRESS = "bdb50dbe-2fe8-4f65-848c-1439cfa64ad5"
+          STATE_DONE        = "9bafcd6c-f951-4b88-8c49-f8ef2875bc9a"
+
+          # --- Parse task ID from PR body ---
+          # Looks for pattern: [AGENT-224 - Some title](https://...)
+          body = os.environ.get("PR_BODY", "") or ""
+          match = re.search(r'\[([A-Z]+-\d+)\s*[-–]', body)
+          if not match:
+              print("No Plane task ID found in PR body. Skipping.")
+              sys.exit(0)
+
+          task_id = match.group(1)          # e.g. "AGENT-224"
+          prefix  = task_id.split("-")[0]   # e.g. "AGENT"
+          seq_id  = int(task_id.split("-")[1])
+
+          if prefix not in PROJECT_MAP:
+              print(f"Unknown project prefix '{prefix}'. Skipping.")
+              sys.exit(0)
+
+          workspace, project_uuid = PROJECT_MAP[prefix]
+
+          # --- Determine new state ---
+          action    = os.environ.get("PR_ACTION", "")
+          merged    = os.environ.get("PR_MERGED", "false").lower() == "true"
+          pr_number = os.environ.get("PR_NUMBER", "")
+          pr_url    = os.environ.get("PR_URL", "")
+          pr_title  = os.environ.get("PR_TITLE", "")
+          repo      = os.environ.get("REPO", "")
+
+          if action == "opened":
+              new_state = STATE_IN_PROGRESS
+              comment   = f"PR opened: **[#{pr_number} - {pr_title}]({pr_url})**\n\nRepo: `{repo}`\n\n— plane-sync-action"
+              state_label = "In Progress"
+          elif action == "closed" and merged:
+              new_state = STATE_DONE
+              comment   = f"PR merged: **[#{pr_number} - {pr_title}]({pr_url})**\n\nRepo: `{repo}`\n\n— plane-sync-action"
+              state_label = "Done"
+          elif action == "closed" and not merged:
+              new_state = STATE_TODO
+              comment   = f"PR closed without merge: **[#{pr_number} - {pr_title}]({pr_url})**\n\nTask returned to Todo.\n\n— plane-sync-action"
+              state_label = "Todo"
+          else:
+              print(f"Action '{action}' not handled. Skipping.")
+              sys.exit(0)
+
+          # --- Find issue UUID from sequence_id ---
+          def api(method, path, body=None):
+              url = f"{BASE_URL}/{path}"
+              data = json.dumps(body).encode() if body else None
+              req = urllib.request.Request(url, data=data, headers=HEADERS, method=method)
+              try:
+                  with urllib.request.urlopen(req) as r:
+                      return json.loads(r.read())
+              except urllib.error.HTTPError as e:
+                  print(f"API error {e.code} on {method} {url}: {e.read().decode()}")
+                  sys.exit(1)
+
+          issues = api("GET", f"workspaces/{workspace}/projects/{project_uuid}/issues/?per_page=100")
+          issue  = next((i for i in issues.get("results", []) if i["sequence_id"] == seq_id), None)
+
+          if not issue:
+              print(f"Issue {task_id} not found in project. Skipping.")
+              sys.exit(0)
+
+          issue_uuid = issue["id"]
+
+          # --- Update state ---
+          api("PATCH", f"workspaces/{workspace}/projects/{project_uuid}/issues/{issue_uuid}/", {"state": new_state})
+          print(f"Updated {task_id} → {state_label}")
+
+          # --- Post comment ---
+          api("POST", f"workspaces/{workspace}/projects/{project_uuid}/issues/{issue_uuid}/comments/", {"comment_html": f"<p>{comment.replace(chr(10), '<br>')}</p>"})
+          print(f"Comment posted to {task_id}")
+          PYEOF
