@@ -34,7 +34,7 @@ jobs:
 
           def vault_req(method, path, body=None, token=None):
               url = f"{VAULT_URL}/{path}"
-              headers = {"Content-Type": "application/json"}
+              headers = {"Content-Type": "application/json", "User-Agent": "vault-client/1.0"}
               if token:
                   headers["X-Vault-Token"] = token
               data = json.dumps(body).encode() if body else None
