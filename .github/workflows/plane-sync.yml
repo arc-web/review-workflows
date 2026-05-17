@@ -30,7 +30,7 @@ jobs:
           import os, re, json, urllib.request, sys
 
           # --- Fetch Plane API key from OpenBao via AppRole ---
-          VAULT_URL = "https://vault.todovibes.com/v1"
+          VAULT_URL = "https://vault.aibrainbuilders.com/v1"
 
           def vault_req(method, path, body=None, token=None):
               url = f"{VAULT_URL}/{path}"
